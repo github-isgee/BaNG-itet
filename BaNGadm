@@ -1,7 +1,9 @@
 #!/usr/bin/env perl
 use strict;
 use warnings;
+
 use Cwd qw( abs_path );
+use Data::Dumper;
 use File::Basename;
 use Getopt::Long qw( :config no_auto_abbrev );
 use POSIX qw( strftime );
@@ -12,6 +14,7 @@ use BaNG::Config;
 use BaNG::BackupServer;
 use BaNG::Wipe;
 use BaNG::Reporting;
+use BaNG::Statistics;
 
 my $version = '0.1';
 my $add_arg;
@@ -32,6 +35,15 @@ my $host_arg;
 my $prefix_arg;
 my $showgroups;
 my $get_oob_snapshots_arg;
+
+my $showrep_recentbackups_arg;
+my $showrep_recenttasks_arg;
+my $showrep_jobstatus_arg;
+# host_arg and group_arg already defined above!
+my $taskid_arg;
+my $jobid_arg;
+my $jobstatus_arg;
+my $lastxhours_arg;
 
 #################################
 # Main
@@ -276,6 +288,122 @@ if ($tidy_arg) {
 
 }
 
+if ($showrep_recentbackups_arg) {
+    printf("Recent Backups\n");
+    printf("\n");
+
+    my %RecentBackups = bangstat_recentbackups($host_arg);
+
+    my $unified_backups = [];
+
+    foreach my $hostgroupkey (sort(keys(%RecentBackups))) {
+        foreach my $backup (@{$RecentBackups{$hostgroupkey}}) {
+            if (!defined($backup->{'JobID'})) {
+                $backup->{'JobID'} = '-';
+            }
+
+            push(@$unified_backups, $backup);
+        }
+    }
+
+    my $formats = [
+        { 'colkey' => 'BkpHost',      'title' => 'Host',        'align' => 'l', 'maxlen' => 10 },
+        { 'colkey' => 'BkpGroup',     'title' => 'Group',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'TaskID',       'title' => 'TaskID',      'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'JobID',        'title' => 'JobID',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Cron',         'title' => 'Cron',        'align' => 'r', 'maxlen' =>  4 },
+        { 'colkey' => 'isThread',     'title' => 'Thr',         'align' => 'r', 'maxlen' =>  3 },
+        { 'colkey' => 'ErrStatus',    'title' => 'ErrSt',       'align' => 'r', 'maxlen' =>  5 },
+        { 'colkey' => 'JobStatus',    'title' => 'JobSt',       'align' => 'r', 'maxlen' =>  5 },
+        { 'colkey' => 'Jobs',         'title' => 'Jobs',        'align' => 'r', 'maxlen' =>  4 },
+        { 'colkey' => 'Starttime',    'title' => 'Start',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Runtime',      'title' => 'Runtime',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesCreated', 'title' => 'FilesCr',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesDel',     'title' => 'FilesDel',    'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesTrans',   'title' => 'FilesTrans',  'align' => 'r', 'maxlen' => 10 },
+        { 'colkey' => 'SizeTrans',    'title' => 'SizeTrans',   'align' => 'r', 'maxlen' =>  9 },
+        { 'colkey' => 'TotFileSize',  'title' => 'TotFileSize', 'align' => 'r', 'maxlen' => 11 },
+        { 'colkey' => 'NumOfFiles',   'title' => 'NumFiles',    'align' => 'r', 'maxlen' =>  8 }
+        ];
+
+    print_formatted_table($unified_backups, $formats);
+    printf("\n");
+}
+
+if ($showrep_recenttasks_arg) {
+    printf("Recent Tasks\n");
+    printf("\n");
+
+    my $RecentTasks = bangstat_recent_tasks();
+
+    my $formats = [
+        { 'colkey' => 'TaskID',       'title' => 'TaskID',      'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Taskname',     'title' => 'Taskname',    'align' => 'l', 'maxlen' => 30 },
+        { 'colkey' => 'Description',  'title' => 'Desc',        'align' => 'l', 'maxlen' => 10 },
+        { 'colkey' => 'Cron',         'title' => 'Cron',        'align' => 'r', 'maxlen' =>  4 },
+        { 'colkey' => 'isThread',     'title' => 'Thr',         'align' => 'r', 'maxlen' =>  3 },
+        { 'colkey' => 'ErrStatus',    'title' => 'ErrSt',       'align' => 'r', 'maxlen' =>  5 },
+        { 'colkey' => 'JobStatus',    'title' => 'JobSt',       'align' => 'r', 'maxlen' =>  5 },
+        { 'colkey' => 'Jobs',         'title' => 'Jobs',        'align' => 'r', 'maxlen' =>  4 },
+        { 'colkey' => 'BkpToHost',    'title' => 'Host',        'align' => 'l', 'maxlen' => 10 },
+        { 'colkey' => 'Starttime',    'title' => 'Start',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Runtime',      'title' => 'Runtime',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesCreated', 'title' => 'FilesCr',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesDel',     'title' => 'FilesDel',    'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesTrans',   'title' => 'FilesTrans',  'align' => 'r', 'maxlen' => 10 },
+        { 'colkey' => 'SizeTrans',    'title' => 'SizeTrans',   'align' => 'r', 'maxlen' =>  9 },
+        { 'colkey' => 'TotFileSize',  'title' => 'TotFileSize', 'align' => 'r', 'maxlen' => 11 },
+        { 'colkey' => 'NumOfFiles',   'title' => 'NumFiles',    'align' => 'r', 'maxlen' =>  8 }
+        ];
+
+    print_formatted_table($RecentTasks->{'Data'}, $formats);
+    printf("\n");
+}
+
+if ($showrep_jobstatus_arg) {
+
+    printf("Job Status Report (last %s hours)\n", defined($lastxhours_arg) ? $lastxhours_arg : 24);
+    printf("\n");
+
+    my $jobstatus = string_to_jobstatus($jobstatus_arg);
+
+    my $backups_found = bangstat_jobs_by_jobstatus(
+        $taskid_arg,
+        $host_arg,
+        $group_arg,
+        $jobid_arg,
+        $jobstatus,
+        $lastxhours_arg
+        );
+
+    foreach my $backup (@$backups_found) {
+        $backup->{'JobStatus'} = jobstatus_to_string($backup->{'JobStatus'});
+    }
+
+    my $formats = [
+        { 'colkey' => 'TaskID',       'title' => 'TaskID',      'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'BkpHost',      'title' => 'Host',        'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'BkpGroup',     'title' => 'Group',       'align' => 'r', 'maxlen' => 20 },
+        { 'colkey' => 'JobID',        'title' => 'JobID',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'JobStatus',    'title' => 'JobStatus',   'align' => 'r', 'maxlen' => 12 },
+        { 'colkey' => 'ErrStatus',    'title' => 'ErrSt',       'align' => 'r', 'maxlen' => 10 },
+        { 'colkey' => 'Starttime',    'title' => 'Start',       'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Stoptime',     'title' => 'Stop',        'align' => 'l', 'maxlen' => 20 },
+        { 'colkey' => 'Runtime',      'title' => 'Runtime',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'isThread',     'title' => 'Thr',         'align' => 'r', 'maxlen' =>  3 },
+        { 'colkey' => 'NumOfFiles',   'title' => 'NumFiles',    'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesTrans',   'title' => 'FilesTrans',  'align' => 'r', 'maxlen' => 10 },
+        { 'colkey' => 'FilesCreated', 'title' => 'FilesCr',     'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'FilesDel',     'title' => 'FilesDel',    'align' => 'r', 'maxlen' =>  8 },
+        { 'colkey' => 'TotFileSize',  'title' => 'TotFileSize', 'align' => 'r', 'maxlen' => 11 },
+        { 'colkey' => 'SizeTrans',    'title' => 'SizeTrans',   'align' => 'r', 'maxlen' =>  9 },
+        { 'colkey' => 'BkpFromPath',  'title' => 'BkpFromPath', 'align' => 'l', 'maxlen' => 30 }
+        ];
+
+    print_formatted_table($backups_found, $formats);
+    printf("\n");
+}
+
 #################################
 # Command line arguments
 #
@@ -301,15 +429,28 @@ sub parse_command_options {
         'p|prefix=s'  => \$prefix_arg,
         'showgroups'  => \$showgroups,
         'setprop=s'   => \$setprop,
-        'get_oob_snapshots:i' => \$get_oob_snapshots_arg,
+        'taskid=s'    => \$taskid_arg,
+        'jobid=s'     => \$jobid_arg,
+        'jobstatus=s' => \$jobstatus_arg,
+        'lastxhours=s'=> \$lastxhours_arg,
+        'get_oob_snapshots:i'   => \$get_oob_snapshots_arg,
+        'showrep-recentbackups' => \$showrep_recentbackups_arg,
+        'showrep-recenttasks'   => \$showrep_recenttasks_arg,
+        'showrep-jobstatus'     => \$showrep_jobstatus_arg
+        
     ) or usage('Invalid commmand line options.');
+
     usage('Do not use together!') if ( $croncreate && $showgroups );
     usage('Check the arguments!') unless (
             ( $add_arg || $delete_arg ) && (( $host_arg && $group_arg ) || $group_arg ) ||
             ( $initial_arg && ( $host_arg && $group_arg ) ) ||
             ( $initial_arg && ( $host_arg && $group_arg && ( $prefix_arg || $dryrun_arg  ))) ||
             ( $croncreate || $croncheck || $failed_arg || $showgroups || $tidy_arg || $dump_arg ) ||
-            ( $host_arg && $group_arg && $setprop ) || (defined $get_oob_snapshots_arg)
+            ( $host_arg && $group_arg && $setprop ) ||
+            ( $showrep_recentbackups_arg && $host_arg ) ||
+            ( $showrep_recenttasks_arg ) ||
+            ( $showrep_jobstatus_arg ) ||
+            (defined $get_oob_snapshots_arg)
         );
     usage('The option --get_oob_snapshots can only take the values 1 for oob-only or 2 to include failed backups.') if ($get_oob_snapshots_arg && ($get_oob_snapshots_arg >=3 || $get_oob_snapshots_arg <0));
 
@@ -371,6 +512,18 @@ sub usage {
         $command --showgroups                         # show available groups
         $command --help                               # show this help message
         $command --version                            # show version number and help
+        
+        $command --showrep-recentbackups              # show recent backups report (requires --host=...)
+        $command --showrep-recenttasks                # show recent tasks report
+        $command --showrep-jobstatus                  # show job status report
+                                                      #   if no filter args are specified only --lastxhours is set to 24.
+                                                      #   the following filters are supported:
+                                                      #     --taskid=<TASKID>
+                                                      #     --host=<HOSTNAME>
+                                                      #     --group=<BaNG-GROUP>
+                                                      #     --jobid=<JOBID>
+                                                      #     --jobstatus=(QUEUED|STARTED|PROCESSED|FINISHED)
+                                                      #     --lastxhours=<hours>
 
         Optional Arguments:
 

@@ -23,12 +23,15 @@ our @EXPORT = qw(
     bangstat_recentbackups_job_details
     bangstat_recent_tasks
     bangstat_last_transfer
-    bangstat_task_jobs
     bangstat_task_delete
-    bangstat_start_backupjob
+    bangstat_task_jobs
+    bangstat_jobs_by_jobstatus
+    bangstat_report_pre_queue_error
+    bangstat_report_queue_backupjob
+    bangstat_report_start_backupjob
+    bangstat_report_update_backupjob
+    bangstat_report_finish_backupjob
     bangstat_set_taskmeta
-    bangstat_update_backupjob
-    bangstat_finish_backupjob
     send_xymon_report
     mail_report
     xymon_report
@@ -37,6 +40,7 @@ our @EXPORT = qw(
     read_global_log
     delete_logfiles
     error404
+    print_formatted_table
 );
 
 our %serverconfig;
@@ -449,6 +453,135 @@ sub bangstat_task_jobs {
     return \%TaskJobs;
 }
 
+sub bangstat_jobs_by_jobstatus {
+    my $taskid     = shift();
+    my $host       = shift();
+    my $group      = shift();
+    my $jobid      = shift();
+    my $jobstatus  = shift();
+    my $lastXhours = shift();
+
+    $lastXhours ||= 24;
+
+    my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
+    return '' unless $conn;
+
+    my @where_parts  = ();
+    my @where_params = ();
+
+    if (defined($taskid)) {
+        push(@where_parts, 'TaskID = ?');
+        push(@where_params, $taskid);
+    }
+
+    if (defined($host)) {
+        push(@where_parts, 'BkpFromHost = ?');
+        push(@where_params, $host);
+    }
+
+    if (defined($group)) {
+        push(@where_parts,  'BkpGroup = ?');
+        push(@where_params, $group);
+    }
+
+    if (defined($jobid)) {
+        push(@where_parts, 'JobID = ?');
+        push(@where_params, $jobid);
+    }
+
+    if (defined($jobstatus)) {
+        push(@where_parts, 'JobStatus = ?');
+        push(@where_params, $jobstatus);
+    }
+
+    if (defined($lastXhours)) {
+        # NB: we use "TimeStamp" instead of Start, because Start is NULL
+        # when a job is in QUEUED status (Start is only set later, in
+        # bangstat_report_start_backupjob() when the job really starts). 
+        push(@where_parts, 'TimeStamp > date_sub(NOW(), INTERVAL ? HOUR)');
+        push(@where_params, $lastXhours);
+    }
+
+    my $where_stmt = '';
+
+    if (@where_parts) {
+        $where_stmt = 'WHERE '.join(' AND ', @where_parts).' ';
+    }
+
+    my $sql =
+        'SELECT '.
+            'ID, '.
+            'TaskID, '.
+            'BkpFromHost, '.
+            'BkpGroup, '.
+            'JobID, '.
+            'JobStatus, '.
+            'ErrStatus, '.
+            'Start, '.
+            'Stop, '.
+            'isThread, '.
+            'NumOfFiles, '.
+            'NumOfFilesTrans, '.
+            'NumOfFilesCreated, '.
+            'NumOfFilesDel, '.
+            'TotFileSize, '.
+            'TotFileSizeTrans, '.
+            'BkpFromPath '.
+        'FROM '.
+            'statistic '.
+        $where_stmt.
+        'ORDER BY '.
+            'ID';
+
+    my $sth = $bangstat_dbh->prepare($sql);
+
+    if (@where_params) {
+        for (my $i = 0; $i < @where_params; $i++) {
+            $sth->bind_param($i + 1, $where_params[$i]);
+        }
+    }
+
+    $sth->execute();
+
+    if ($sth->err()) {
+        printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+    }
+
+    my $backups_found = [];
+    while ( my $dbrow = $sth->fetchrow_hashref() ) {
+        my $Runtime = $dbrow->{'Runtime'} ? $dbrow->{'Runtime'} / 60 : '-';
+        my $Start   = defined($dbrow->{'Start'}) ? $dbrow->{'Start'} : '-';
+        my $Stop    = defined($dbrow->{'Stop'})  ? $dbrow->{'Stop'}  : '-';
+
+        push(
+            @$backups_found,
+            {
+                'TaskID'       => $dbrow->{'TaskID'},
+                'BkpHost'      => $dbrow->{'BkpFromHost'},
+                'BkpGroup'     => $dbrow->{'BkpGroup'} || '-',
+                'JobID'        => $dbrow->{'JobID'},
+                'JobStatus'    => $dbrow->{'JobStatus'},
+                'ErrStatus'    => $dbrow->{'ErrStatus'},
+                'Starttime'    => $Start,
+                'Stoptime'     => $Stop,
+                'Runtime'      => time2human($Runtime),
+                'isThread'     => $dbrow->{'isThread'},
+                'NumOfFiles'   => num2human($dbrow->{'NumOfFiles'}),
+                'FilesTrans'   => num2human($dbrow->{'NumOfFilesTrans'}),
+                'FilesCreated' => num2human($dbrow->{'NumOfFilesCreated'}),
+                'FilesDel'     => num2human($dbrow->{'NumOfFilesDel'}),
+                'TotFileSize'  => num2human($dbrow->{'TotFileSize'},1024),
+                'SizeTrans'    => num2human($dbrow->{'TotFileSizeTrans'},1024),
+                'BkpFromPath'  => $dbrow->{'BkpFromPath'}
+            }
+            );
+    }
+
+    $sth->finish();
+
+    return $backups_found;
+}
+
 sub send_xymon_report {
     my ($report) = @_;
 
@@ -471,22 +604,34 @@ sub send_xymon_report {
     return 1;
 }
 
-sub bangstat_start_backupjob {
+sub bangstat_report_pre_queue_error {
     my ( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $path, $srcfolder, $targetpath, $errcode, $jobstatus, @outlines ) = @_;
 
     if ( $serverconfig{db_support} ) {
         $path =~ s/'//g;    # rm quotes to avoid errors in sql syntax
-        my $isSubfolderThread = $hosts{"$host-$group"}->{hostconfig}->{BKP_THREAD_SUBFOLDERS} ? 'true' : 'NULL';
+        my $isSubfolderThread = $hosts{"$host-$group"}->{hostconfig}->{BKP_THREAD_SUBFOLDERS} ? 1 : undef;
 
-        my $sql = qq(
-        INSERT INTO statistic (
-        TaskID, JobID, BkpFromHost, BkpGroup, BkpFromPath, BkpFromPathRoot, BkpToHost, BkpToPath,
-        isThread, ErrStatus, JobStatus, Start
-        ) VALUES (
-        '$taskid', '$jobid', '$host', '$group', '$path', '$srcfolder', '$servername', '$targetpath',
-        $isSubfolderThread , '$errcode', '$jobstatus', FROM_UNIXTIME('$startstamp')
-        )
-        );
+        # We don't set a start time, since the job is just queued
+        # and not yet started.
+        my $sql =
+            'INSERT INTO statistic ('.
+                'TaskID, '.
+                'JobID, '.
+                'Start, '.
+                'Stop, '.
+                'BkpFromHost, '.
+                'BkpGroup, '.
+                'BkpFromPath, '.
+                'BkpFromPathRoot, '.
+                'BkpToHost, '.
+                'BkpToPath, '.
+                'isThread, '.
+                'ErrStatus, '.
+                'JobStatus '.
+                ') '.
+            'VALUES '.
+                '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
         logit( $taskid, $host, $group, "DB Report SQL command: $sql" ) if ( $serverconfig{verboselevel} >= 2 );
 
         my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
@@ -496,60 +641,156 @@ sub bangstat_start_backupjob {
         }
 
         my $sth = $bangstat_dbh->prepare($sql);
+
+        $sth->bind_param( 1, $taskid);
+        $sth->bind_param( 2, $jobid);
+        $sth->bind_param( 3, $startstamp);
+        $sth->bind_param( 4, $endstamp);
+        $sth->bind_param( 5, $host);
+        $sth->bind_param( 6, $group);
+        $sth->bind_param( 7, $path);
+        $sth->bind_param( 8, $srcfolder);
+        $sth->bind_param( 9, $servername);
+        $sth->bind_param(10, $targetpath);
+        $sth->bind_param(11, $isSubfolderThread);
+        $sth->bind_param(12, $errcode);
+        $sth->bind_param(13, $jobstatus);
+
         $sth->execute() unless $serverconfig{dryrun};
+
+        if ($sth->err()) {
+            printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+        }
+
+        $sth->finish();
+        $bangstat_dbh->disconnect;
+
+        logit( $taskid, $host, $group, "Bangstat queue_backup sent." );
+    } else {
+        logit( $taskid, $host, $group, "bangstat_queue_backup not sent - no DB-Support!" );
+    }
+    return 1;
+}
+
+sub bangstat_report_queue_backupjob {
+    my ( $taskid, $jobid, $host, $group, $path, $srcfolder, $targetpath) = @_;
+
+    if ( $serverconfig{db_support} ) {
+        $path =~ s/'//g;    # rm quotes to avoid errors in sql syntax
+        my $isSubfolderThread = $hosts{"$host-$group"}->{hostconfig}->{BKP_THREAD_SUBFOLDERS} ? 1 : undef;
+
+        # We don't set a start time, since the job is just queued
+        # and not yet started.
+        my $sql =
+            'INSERT INTO statistic ('.
+                'TaskID, '.
+                'JobID, '.
+                'BkpFromHost, '.
+                'BkpGroup, '.
+                'BkpFromPath, '.
+                'BkpFromPathRoot, '.
+                'BkpToHost, '.
+                'BkpToPath, '.
+                'isThread, '.
+                'ErrStatus, '.
+                'JobStatus '.
+                ') '.
+            'VALUES '.
+                '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
+        logit( $taskid, $host, $group, "DB Report SQL command: $sql" ) if ( $serverconfig{verboselevel} >= 2 );
+
+        my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
+        if ( !$conn ) {
+            logit( $taskid, $host, $group, "ERROR: Could not connect to DB to send bangstat report." );
+            return 1;
+        }
+
+        my $sth = $bangstat_dbh->prepare($sql);
+
+        $sth->bind_param( 1, $taskid);
+        $sth->bind_param( 2, $jobid);
+        $sth->bind_param( 3, $host);
+        $sth->bind_param( 4, $group);
+        $sth->bind_param( 5, $path);
+        $sth->bind_param( 6, $srcfolder);
+        $sth->bind_param( 7, $servername);
+        $sth->bind_param( 8, $targetpath);
+        $sth->bind_param( 9, $isSubfolderThread);
+        $sth->bind_param(10, ERRSTATUS_NOERR);
+        $sth->bind_param(11, JOBSTATUS_QUEUED);
+
+        $sth->execute() unless $serverconfig{dryrun};
+
+        if ($sth->err()) {
+            printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+        }
+
+        $sth->finish();
+        $bangstat_dbh->disconnect;
+
+        logit( $taskid, $host, $group, "Bangstat queue_backup sent." );
+    } else {
+        logit( $taskid, $host, $group, "bangstat_queue_backup not sent - no DB-Support!" );
+    }
+    return 1;
+}
+
+sub bangstat_report_start_backupjob {
+    my ( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $path, $srcfolder, $targetpath, $errcode, $jobstatus, @outlines ) = @_;
+
+    if ( $serverconfig{db_support} ) {
+        $path =~ s/'//g;    # rm quotes to avoid errors in sql syntax
+        my $isSubfolderThread = $hosts{"$host-$group"}->{hostconfig}->{BKP_THREAD_SUBFOLDERS} ? 1 : undef;
+
+        my $sql =
+            'UPDATE '.
+                'statistic '.
+            'SET '.
+                'ErrStatus = ?, '.
+                'JobStatus = ?, '.
+                'Start = FROM_UNIXTIME(?) '.
+            'WHERE '.
+                'TaskID = ? AND '.
+                'JobID = ? AND '.
+                'BkpFromHost = ? AND '.
+                'BkpGroup = ? AND '.
+                'BkpFromPath = ?';
+
+        my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
+        if ( !$conn ) {
+            logit( $taskid, $host, $group, "ERROR: Could not connect to DB to send bangstat report." );
+            return 1;
+        }
+
+        my $sth = $bangstat_dbh->prepare($sql);
+
+        $sth->bind_param(1, $errcode);
+        $sth->bind_param(2, $jobstatus);
+        $sth->bind_param(3, $startstamp);
+        $sth->bind_param(4, $taskid);
+        $sth->bind_param(5, $jobid);
+        $sth->bind_param(6, $host);
+        $sth->bind_param(7, $group);
+        $sth->bind_param(8, $path);
+
+        $sth->execute() unless $serverconfig{dryrun};
+
+        if ($sth->err()) {
+            printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+        }
+
         $sth->finish();
         $bangstat_dbh->disconnect;
 
         logit( $taskid, $host, $group, "Bangstat start_backup sent." );
     } else {
-        logit( $taskid, $host, $group, "bangstat_start_backup no sent - no DB-Support!" );
+        logit( $taskid, $host, $group, "bangstat_start_backup not sent - no DB-Support!" );
     }
     return 1;
 }
 
-sub bangstat_set_taskmeta {
-    my ( $taskid, $host, $group, $cron, $override ) = @_;
-
-    if ( $serverconfig{db_support} ) {
-        $host  ||= 'BULK';
-        $group ||= '*';
-
-        my $taskName    = $host ."_". $group;
-        my $description = $override || "" ;
-
-        $description = get_taskmeta($host, $group) unless $override;
-
-        print "TaskID: $taskid Taskname: $taskName Description: $description Cron: $cron\n" if $serverconfig{verbose};
-
-        my $sql = qq(
-            INSERT INTO statistic_task_meta (
-            TaskID, TaskName, Description, Cron
-            ) VALUES (
-            '$taskid', '$taskName', '$description', '$cron')
-        );
-
-        logit( $taskid, $host, $group, "DB Report SQL command: $sql" ) if ( $serverconfig{verboselevel} >= 2 );
-
-        my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
-        if ( !$conn ) {
-            logit( $taskid, $host, $group, "ERROR: Could not connect to DB to send bangstat report." );
-            return 1;
-        }
-
-        my $sth = $bangstat_dbh->prepare($sql);
-        $sth->execute() unless $serverconfig{dryrun};
-        $sth->finish();
-        $bangstat_dbh->disconnect;
-
-        logit( $taskid, $host, $group, "Bangstat task_meta sent." );
-    } else {
-        logit( $taskid, $host, $group, "bangstat_set_taskmeta no sent - no DB-Support!" );
-    }
-
-    return 1;
-}
-
-sub bangstat_update_backupjob {
+sub bangstat_report_update_backupjob {
     my ( $taskid, $jobid, $host, $group, $endstamp, $path, $targetpath, $errcode, $jobstatus, @outlines ) = @_;
 
     if ( $serverconfig{db_support} ) {
@@ -590,30 +831,32 @@ sub bangstat_update_backupjob {
 
         $path =~ s/'//g;    # rm quotes to avoid errors in sql syntax
 
-        my $SQL = qq(
-            UPDATE statistic
-            SET JobStatus         = '$jobstatus',
-                ErrStatus         = '$errcode',
-                Stop              = FROM_UNIXTIME('$endstamp'),
-                NumOfFiles        = $log_values{NumOfFiles},
-                NumOfFilesTrans   = $log_values{NumOfFilesTrans},
-                NumOfFilesCreated = $log_values{NumOfFilesCreated},
-                NumOfFilesDel     = $log_values{NumOfFilesDel},
-                TotFileSize       = $log_values{TotFileSize},
-                TotFileSizeTrans  = $log_values{TotFileSizeTrans},
-                LitData           = $log_values{LitData},
-                MatchData         = $log_values{MatchData},
-                FileListSize      = $log_values{FileListSize},
-                FileListGenTime   = $log_values{FileListGenTime},
-                FileListTransTime = $log_values{FileListTransTime},
-                TotBytesSent      = $log_values{TotBytesSent},
-                TotBytesRcv       = $log_values{TotBytesRcv}
-            WHERE TaskID          = '$taskid'
-                AND JobID         = '$jobid'
-                AND BkpFromHost   = '$host'
-                AND BkpGroup      = '$group'
-                AND BkpFromPath   = '$path';
-        );
+        my $sql =
+            'UPDATE '.
+                'statistic '.
+            'SET '.
+                'ErrStatus = ?, '.
+                'JobStatus = ?, '.
+                'Stop = FROM_UNIXTIME(?), '.
+                'NumOfFiles = ?, '.
+                'NumOfFilesTrans = ?, '.
+                'NumOfFilesCreated = ?, '.
+                'NumOfFilesDel = ?, '.
+                'TotFileSize = ?, '.
+                'TotFileSizeTrans = ?, '.
+                'LitData = ?, '.
+                'MatchData = ?, '.
+                'FileListSize = ?, '.
+                'FileListGenTime = ?, '.
+                'FileListTransTime = ?, '.
+                'TotBytesSent = ?, '.
+                'TotBytesRcv = ? '.
+            'WHERE '.
+                'TaskID = ? AND '.
+                'JobID = ? AND '.
+                'BkpFromHost = ? AND '.
+                'BkpGroup = ? AND '.
+                'BkpFromPath = ?';
 
         my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
         if ( !$conn ) {
@@ -621,32 +864,60 @@ sub bangstat_update_backupjob {
             return 1;
         }
 
-        my $sth = $bangstat_dbh->prepare($SQL);
+        my $sth = $bangstat_dbh->prepare($sql);
+
+        $sth->bind_param( 1, $errcode);
+        $sth->bind_param( 2, $jobstatus);
+        $sth->bind_param( 3, $endstamp);
+        $sth->bind_param( 4, $log_values{NumOfFiles});
+        $sth->bind_param( 5, $log_values{NumOfFilesTrans});
+        $sth->bind_param( 6, $log_values{NumOfFilesCreated});
+        $sth->bind_param( 7, $log_values{NumOfFilesDel});
+        $sth->bind_param( 8, $log_values{TotFileSize});
+        $sth->bind_param( 9, $log_values{TotFileSizeTrans});
+        $sth->bind_param(10, $log_values{LitData});
+        $sth->bind_param(11, $log_values{MatchData});
+        $sth->bind_param(12, $log_values{FileListSize});
+        $sth->bind_param(13, $log_values{FileListGenTime});
+        $sth->bind_param(14, $log_values{FileListTransTime});
+        $sth->bind_param(15, $log_values{TotBytesSent});
+        $sth->bind_param(16, $log_values{TotBytesRcv});
+        $sth->bind_param(17, $taskid);
+        $sth->bind_param(18, $jobid);
+        $sth->bind_param(19, $host);
+        $sth->bind_param(20, $group);
+        $sth->bind_param(21, $path);
+
         $sth->execute() unless $serverconfig{dryrun};
+
+        if ($sth->err()) {
+            printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+        }
+
         $sth->finish();
         $bangstat_dbh->disconnect;
 
-        $SQL =~ s/;.*/;/sg;
-        logit( $taskid, $host, $group, "Set jobstatus SQL command: $SQL" ) if ( $serverconfig{verbose} && $serverconfig{verboselevel} >= 2 );
         logit( $taskid, $host, $group, "Set jobstatus to $jobstatus for host $host group $group jobid $jobid" );
     } else {
-        logit( $taskid, $host, $group, "bangstat_update_backupjob no sent - no DB-Support!" );
+        logit( $taskid, $host, $group, "bangstat_update_backupjob not sent - no DB-Support!" );
     }
 
     return 1;
 }
 
-sub bangstat_finish_backupjob {
+sub bangstat_report_finish_backupjob {
     my ( $taskid, $jobid, $host, $group, $jobstatus ) = @_;
 
     if ( $serverconfig{db_support} ) {
-        my $SQL = qq(
-            UPDATE statistic
-                SET JobStatus = '$jobstatus'
-            WHERE BkpFromHost = '$host'
-                AND BkpGroup  = '$group'
-                AND JobID     = '$jobid';
-        );
+        my $sql =
+            'UPDATE '.
+                'statistic '.
+            'SET '.
+                'JobStatus = ? '.
+            'WHERE '.
+                'BkpFromHost = ? AND '.
+                'BkpGroup = ? AND '.
+                'JobID = ?';
 
         my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
         if ( !$conn ) {
@@ -654,15 +925,66 @@ sub bangstat_finish_backupjob {
             return 1;
         }
 
-        my $sth = $bangstat_dbh->prepare($SQL);
+        my $sth = $bangstat_dbh->prepare($sql);
+
+        $sth->bind_param(1, $jobstatus);
+        $sth->bind_param(2, $host);
+        $sth->bind_param(3, $group);
+        $sth->bind_param(4, $jobid);
+
         $sth->execute() unless $serverconfig{dryrun};
+
+        if ($sth->err()) {
+            printf("SQL ERROR (%s): %s\n", $sth->err(), $sth->errstr());
+        }
+
         $sth->finish();
 
-        $SQL =~ s/;.*/;/sg;
-        logit( $taskid, $host, $group, "Set jobstatus SQL command: $SQL" ) if ( $serverconfig{verbose} && $serverconfig{verboselevel} >= 2 );
         logit( $taskid, $host, $group, "Set jobstatus to $jobstatus for host $host group $group jobid $jobid" );
     } else {
-        logit( $taskid, $host, $group, "bangstat_finish_backupjob no sent - no DB-Support!" );
+        logit( $taskid, $host, $group, "bangstat_finish_backupjob not sent - no DB-Support!" );
+    }
+
+    return 1;
+}
+
+sub bangstat_set_taskmeta {
+    my ( $taskid, $host, $group, $cron, $override ) = @_;
+
+    if ( $serverconfig{db_support} ) {
+        $host  ||= 'BULK';
+        $group ||= '*';
+
+        my $taskName    = $host ."_". $group;
+        my $description = $override || "" ;
+
+        $description = get_taskmeta($host, $group) unless $override;
+
+        print "TaskID: $taskid Taskname: $taskName Description: $description Cron: $cron\n" if $serverconfig{verbose};
+
+        my $sql = qq(
+            INSERT INTO statistic_task_meta (
+            TaskID, TaskName, Description, Cron
+            ) VALUES (
+            '$taskid', '$taskName', '$description', '$cron')
+        );
+
+        logit( $taskid, $host, $group, "DB Report SQL command: $sql" ) if ( $serverconfig{verboselevel} >= 2 );
+
+        my $conn = bangstat_db_connect( $serverconfig{config_bangstat} );
+        if ( !$conn ) {
+            logit( $taskid, $host, $group, "ERROR: Could not connect to DB to send bangstat report." );
+            return 1;
+        }
+
+        my $sth = $bangstat_dbh->prepare($sql);
+        $sth->execute() unless $serverconfig{dryrun};
+        $sth->finish();
+        $bangstat_dbh->disconnect;
+
+        logit( $taskid, $host, $group, "Bangstat task_meta sent." );
+    } else {
+        logit( $taskid, $host, $group, "bangstat_set_taskmeta not sent - no DB-Support!" );
     }
 
     return 1;
@@ -964,6 +1286,209 @@ sub error404 {
             title => $title,
         )->render()
     )->throw;
+}
+
+##############################################################################
+#                                                                            #
+# print_formatted_table($data, $formats)                                     #
+#                                                                            #
+# prints a dynamically formatted, data-aligned table to                      #
+# STDOUT. the sub will compute the required minimal and                      #
+# maximal column widths from table data ($data) and for-                     #
+# matting constraints ($formats). the overall length of                      #
+# the table isn't limited, so displaying a larger table                      #
+# requires a fairly large terminal.                                          #
+#                                                                            #
+# params:                                                                    #
+#                                                                            #
+#   $data:                                                                   #
+#          the table body data, in the following format:                     #
+#          a reference to an array of hashreferences.                        #
+#          each array item (hashref) represents a row.                       #
+#          each hashref points to a hash containing                          #
+#          key-value pairs for each column on that row.                      #
+#                                                                            #
+#          example:                                                          #
+#                                                                            #
+#          my $data = [                                                      #
+#              { 'colA' => '12345', 'colB' => 'Task one'   },                #
+#              { 'colA' => '67890', 'colB' => 'Task two'   },                #
+#              { 'colA' => '13579', 'colB' => 'Task three' }                 #
+#              ];                                                            #
+#                                                                            #
+#   $formats:                                                                #
+#          table metadata, like custom table column titles,                  #
+#          and column formatting information. this is an array               #
+#          of hash references. it *must* contain the following               #
+#          key-value pairs:                                                  #
+#          - colkey: a column name that matches a column key                 #
+#                    in $data. only columns listed in $formats               #
+#                    will actually be printed to STDOUT. note                #
+#                    that colkey must exist for each row in $data.           #
+#                    it is however allowed to omit displaying                #
+#                    some columns existing in $data by just not              #
+#                    mentioning them in $formats. also note that             #
+#                    the order of the array referenced by                    #
+#                    $formats actually defines the column output             #
+#                    order (and not the natural column order in              #
+#                    $data!).                                                #
+#          - title:  a custom column title (text). should not                #
+#                    exceed "maxlen" characters (see below).                 #
+#          - align:  'l' for left text alignment in the output               #
+#                    of the referenced row's body data. 'r' for              #
+#                    right text alignment.                                   #
+#          - maxlen: maximum length (width) of the referenced                #
+#                    column. table cell strings that are longer              #
+#                    than maxlen characters will be truncated to             #
+#                    maxlen characters. note that the "title"                #
+#                    attribute should have a string length that              #
+#                    is lower or equal to maxlen.                            #
+#          example:                                                          #
+#                                                                            #
+#          my $formats = [                                                   #
+#              {                                                             #
+#                'colkey' => 'colA',                                         #
+#                'title'  => 'Task ID',                                      #
+#                'align'  => 'r',                                            #
+#                'maxlen' =>  8                                              #
+#              },                                                            #
+#              {                                                             #
+#                'colkey' => 'colB',                                         #
+#                'title'  => 'Desc',                                         #
+#                'align'  => 'l',                                            #
+#                'maxlen' => 12                                              #
+#              }                                                             #
+#              ];                                                            #
+#                                                                            #
+##############################################################################
+sub print_formatted_table {
+    my ($data, $formats) = @_;
+
+    # compute minimal column lengths for each
+    # column, respecting maxlen.
+    my $col_minlengths = {};
+
+    for (my $i = 0; $i < @$formats; $i++) {
+        my $colkey    = $formats->[$i]{'colkey'};
+        my $colmaxlen = $formats->[$i]{'maxlen'};
+        my $coltitle  = $formats->[$i]{'title'};
+
+        my $colminlen = length($coltitle);
+
+        foreach my $row (@$data) {
+            my $cellstr = defined($row->{$colkey})
+                ? $row->{$colkey}
+                : '';
+
+            my $cellstrlen = length($cellstr);
+
+            # cap the cell value length at colmaxlen
+            if ($cellstrlen > $colmaxlen) {
+                $cellstrlen = $colmaxlen;
+            }
+
+            # update minimum column length
+            # if longer cell value found
+            if ($cellstrlen > $colminlen) {
+                $colminlen = $cellstrlen;
+            }
+        }
+
+        # minimum column length should never
+        # exceed maxlen
+        if ($colminlen > $colmaxlen) {
+            $colminlen = $colmaxlen;
+        }
+
+        $col_minlengths->{$colkey} = $colminlen;
+    }
+
+    # create printf format strings for each column
+    my $printf_formats = {};
+
+    for (my $i = 0; $i < @$formats; $i++) {
+        my $colkey = $formats->[$i]{'colkey'};
+        my $align  = $formats->[$i]{'align'};
+
+        my $colminlength = $col_minlengths->{$colkey};
+
+        if ($align eq 'r') {
+            $printf_formats->{$colkey} = sprintf(
+                '%%%ss',
+                $colminlength
+                );
+
+        } elsif ($align eq 'l') {
+            $printf_formats->{$colkey} = sprintf(
+                '%%-%ss',
+                $colminlength
+                );
+
+        } else {
+            printf(
+                STDERR
+                "invalid alignment specifier: %s for column %s.\n",
+                $align,
+                $colkey
+                );
+
+            # fall back to left alignment
+            $printf_formats->{$colkey} = "%${colminlength}s";
+        }
+    }
+
+    # output table column header
+    for (my $i = 0; $i < @$formats; $i++) {
+        my $colkey       = $formats->[$i]{'colkey'};
+        my $coltitle     = $formats->[$i]{'title'};
+        my $colminlength = $col_minlengths->{$colkey};
+
+        # truncate column title to colminlength, if longer.
+        # note: colminlength might be tttt
+
+        if (length($coltitle) > $colminlength) {
+            $coltitle = substr($coltitle, 0, $colminlength);
+        }
+
+        my $varspace = $i < @$formats - 1 ? ' ' : '';
+        printf($printf_formats->{$colkey}.$varspace, $coltitle);
+    }
+
+    printf("\n");
+
+    # output table column header horizontal rules
+    for (my $i = 0; $i < @$formats; $i++) {
+        my $colkey       = $formats->[$i]{'colkey'};
+        my $colminlength = $col_minlengths->{$colkey};
+
+        my $varspace = $i < @$formats - 1 ? ' ' : '';
+        printf(('-' x $colminlength).$varspace);
+    }
+
+    printf("\n");
+
+    # output table body
+    for (my $i = 0; $i < @$data; $i++) {
+        for (my $j = 0; $j < @$formats; $j++) {
+            my $colkey = $formats->[$j]{'colkey'};
+
+            my $value = exists($data->[$i]{$colkey})
+                ? $data->[$i]{$colkey}
+                : '';
+
+            my $colminlength = $col_minlengths->{$colkey};
+
+            # truncate if needed
+            if (length($value) > $colminlength) {
+                $value = substr($value, 0, $colminlength);
+            }
+
+            my $varspace = $j < @$formats - 1 ? ' ' : '';
+            printf($printf_formats->{$colkey}.$varspace, $value);
+        }
+
+        printf("\n");
+    }
 }
 
 1;

@@ -70,6 +70,32 @@ if ( $serverconfig{bkpmode} eq "rsync") {
 
     reorder_queue_by_priority( $taskid, $host_arg, $group_arg );
 
+    # add all queued jobs to db, in order of their priority.
+    # this allows distinction between still queued, running
+    # and finished jobs.
+    foreach my $bkpjob (@queue) {
+        my $exclsubfolders = $bkpjob->{'exclsubfolders'} || 0;
+
+        # append custom string to path written to DB
+        # if we are excluding subfolders
+        my $bkpfrompath = $exclsubfolders
+            ? $bkpjob->{path}."/FILESONLY"
+            : $bkpjob->{path};
+
+        $bkpfrompath =~ s/'//g;
+        $bkpfrompath =~ s/\/\//\//g;
+
+        bangstat_report_queue_backupjob(
+            $bkpjob->{taskid},
+            $bkpjob->{jobid},
+            $bkpjob->{host},
+            $bkpjob->{group},
+            $bkpfrompath,
+            $bkpjob->{srcfolder},
+            targetpath($bkpjob->{host}, $bkpjob->{group})
+            );
+    }
+
     run_rsync_threads($host_arg, $group_arg, $nthreads_arg, $dryrun_arg, $cron);
 
     logit( $taskid, $host_arg, $group_arg, "Task $taskid finished!" );

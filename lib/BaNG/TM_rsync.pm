@@ -132,8 +132,8 @@ sub _execute_rsync {
     $bkpfrompath =~ s/'//g;
     $bkpfrompath =~ s/\/\//\//g;
 
-    # report rsync start to DB, jobstatus => 0
-    bangstat_start_backupjob( $taskid, $jobid, $host, $group, $startstamp, '', $bkpfrompath, $srcfolder, targetpath( $host, $group ), '0', '0', '' ) unless $noreport;
+    # report rsync start to DB, jobstatus => JOBSTATUS_STARTED
+    bangstat_report_start_backupjob( $taskid, $jobid, $host, $group, $startstamp, '', $bkpfrompath, $srcfolder, targetpath( $host, $group ), ERRSTATUS_NOERR, JOBSTATUS_STARTED, '' ) unless $noreport;
 
     my $taskset = '';
     if ( $hosts{"$host-$group"}->{hostconfig}->{TASKSET_OPTIONS} ) {
@@ -221,8 +221,8 @@ sub _execute_rsync {
         logit( $taskid, $host, $group, "Rsync successful for host $host group $group path $path" );
     }
 
-    #report finished rsync to DB, jobstatus => 1
-    bangstat_update_backupjob( $taskid, $jobid, $host, $group, $endstamp, $bkpfrompath, targetpath( $host, $group ), $errcode, '1', @outlines ) unless $noreport;
+    #report finished rsync to DB, jobstatus => JOBSTATUS_PROCESSED
+    bangstat_report_update_backupjob( $taskid, $jobid, $host, $group, $endstamp, $bkpfrompath, targetpath( $host, $group ), $errcode, JOBSTATUS_PROCESSED, @outlines ) unless $noreport;
 
     return $errcode;
 }
@@ -378,6 +378,7 @@ sub _eval_rsync_generic_exclude_cmd {
         $globstr =~ s{(.)} { $patmap{$1} || "\Q$1" }ge;
         return '^' . $globstr . '$';
     }
+
 sub _queue_remote_subfolders {
     my ( $taskid, $jobid, $host, $group, $bkptimestamp, $dosnapshot, $srcfolder, $dryrun, $cron, $noreport ) = @_;
     my $hostconfig    = $hosts{"$host-$group"}->{hostconfig};
@@ -557,8 +558,8 @@ sub _finish_rsync_backupjob {
         }
     }
 
-    # report finished job to DB, jobstatus => 2
-    bangstat_finish_backupjob( $taskid, $jobid, $host, $group, '2' ) unless $noreport;
+    # report finished job to DB, jobstatus => JOBSTATUS_FINISHED
+    bangstat_report_finish_backupjob( $taskid, $jobid, $host, $group, JOBSTATUS_FINISHED) unless $noreport;
 
     my %RecentBackups = bangstat_recentbackups($host);
     unless ($noreport) {

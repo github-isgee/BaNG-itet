@@ -33,7 +33,7 @@
                             <% ELSIF bkp.JobStatus == -5 %>
                             <% xymoncolor = 'red' %>
                             <% titlemsg = 'Rsync command not found!' %>
-                            <% ELSIF bkp.JobStatus == 0 || bkp.JobStatus == 1 %>
+                            <% ELSIF bkp.JobStatus == 1 || bkp.JobStatus == 2 %>
                             <% xymoncolor = 'running' %>
                             <% titlemsg = 'Backup currently running...' %>
                             <% ELSIF bkp.ErrStatus == 0 %>

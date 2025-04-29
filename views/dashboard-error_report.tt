@@ -21,12 +21,12 @@ Total Backup Jobs last 24H: <% RecentBackups24h.Data.size %>
     </thead>
     <tbody>
         <%- FOREACH bkp IN RecentBackups24h.Data.nsort('TaskID').reverse %>
-            <% NEXT IF ( bkp.JobStatus == 2 AND bkp.ErrStatus == 0 ) OR ( bkp.JobStatus == -1 AND bkp.BkpGroup == 'mac-workstation' ) OR ( bkp.JobStatus == 2 AND ( bkp.ErrStatus == 24 OR bkp.ErrStatus == "0,24" ) ) %>
+            <% NEXT IF ( bkp.JobStatus == 3 AND bkp.ErrStatus == 0 ) OR ( bkp.JobStatus == -1 AND bkp.BkpGroup == 'mac-workstation' ) OR ( bkp.JobStatus == 3 AND ( bkp.ErrStatus == 24 OR bkp.ErrStatus == "0,24" ) ) %>
             <%- errTxt = '' %>
             <tr height="20">
                 <td><a href="/reporting/job/<% bkp.JobID %>"><% bkp.JobID.substr(12) %></a></td>
-                <td <% IF bkp.JobStatus == 2 %>class="hook" title="Job done">
-                    <% ELSIF bkp.JobStatus == 1 %>class="hook_box" title="Rsync done">
+                <td <% IF bkp.JobStatus == 3 %>class="hook" title="Job done">
+                    <% ELSIF bkp.JobStatus == 2 %>class="hook_box" title="Rsync done">
                     <% ELSIF bkp.JobStatus == -1 %>class="offline pointer" data-href='https://<% xymon_server %>/xymon-cgi/svcstatus.sh?HOST=<% bkp.BkpHost %>&SERVICE=conn' title="Host offline">
                     <% ELSIF bkp.JobStatus == -2 %>class="notallow" title="Remote Shell not working">
                     <% ELSIF bkp.JobStatus == -5 %>class="notallow" title="Rsync command not found">

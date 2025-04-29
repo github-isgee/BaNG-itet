@@ -31,9 +31,9 @@ Total Jobs: <% jobs.Data.size %>
             <tr>
                 <td><% IF job.Jobs >= 2 %><a href="/reporting/job/<% job.JobID %>"><% job.JobID.substr(12) %></a>
                     <% ELSE %><% job.JobID.substr(12) %><% END%></td>
-                <td <%- IF job.JobStatus == 2 AND job.Jobs >=2 %>class="hook3" title="forked Job done">
-                    <% ELSIF job.JobStatus == 2 %>class="hook" title="Job done">
-                    <% ELSIF job.JobStatus == 1 %>class="hook_box" title="Rsync done">
+                <td <%- IF job.JobStatus == 3 AND job.Jobs >=2 %>class="hook3" title="forked Job done">
+                    <% ELSIF job.JobStatus == 3 %>class="hook" title="Job done">
+                    <% ELSIF job.JobStatus == 2 %>class="hook_box" title="Rsync done">
                     <% ELSIF job.JobStatus == -1 %>class="offline pointer" data-href='https://<% xymon_server %>/xymon-cgi/svcstatus.sh?HOST=<% job.jobHost %>&SERVICE=conn' title="Host offline">
                     <% ELSIF bkp.JobStatus == -2 %>class="notallow" title="Remote Shell not working">
                     <% ELSIF bkp.JobStatus == -5 %>class="notallow" title="Rsync command not found">

@@ -9,9 +9,44 @@ use File::Find::Rule;
 use POSIX qw( strftime );
 use YAML::Tiny qw( LoadFile DumpFile );
 use Text::Diff;
-
 use Exporter 'import';
+
+###################################################
+##TBD: due to introduction of new job status
+#      JOBSTATUS_QUEUED, the numeric values of
+#      the existing positive job statuses is
+#      incremented by one, which might lead to
+#      problems in external components evaluating
+#      the bangstat database, or in BaNG-Web.
+#      One might have to adjust the values in
+#      the latter code and also migrate the
+#      jobstatus values in existing bangstat
+#      database tables which contain rows generated
+#      before this change was introduced.
+##NB: View Templates in views/*.tt updated.
+#
+###################################################
+
+use constant ERRSTATUS_NOERR           =>  0;
+
+use constant JOBSTATUS_QUEUED          =>  0; # (new)       -  "job was placed to queue"
+use constant JOBSTATUS_STARTED         =>  1; # prev value: 0  "specific rsync process started"
+use constant JOBSTATUS_PROCESSED       =>  2; # prev value: 1, "specific rsync process done"
+use constant JOBSTATUS_FINISHED        =>  3; # prev value: 2, "all rsync processes done"
+
+use constant JOBSTATUS_FAILED_OFFLINE  => -1; # storage server unreachable from bang-server
+use constant JOBSTATUS_FAILED_RSHELL   => -2; # remote shell error (rsh, ssh)
+use constant JOBSTATUS_FAILED_RSYNCAPP => -5; # rsync utility not found
+
 our @EXPORT = qw(
+    ERRSTATUS_NOERR
+    JOBSTATUS_QUEUED
+    JOBSTATUS_STARTED
+    JOBSTATUS_PROCESSED
+    JOBSTATUS_FINISHED
+    JOBSTATUS_FAILED_OFFLINE
+    JOBSTATUS_FAILED_RSHELL
+    JOBSTATUS_FAILED_RSYNCAPP
     %hosts
     %groups
     %servers
@@ -38,6 +73,8 @@ our @EXPORT = qw(
     targetpath
     list_groups
     list_groupmembers
+    jobstatus_to_string
+    string_to_jobstatus
 );
 
 our %hosts;
@@ -77,6 +114,10 @@ sub get_serverconfig {
             serverconfig => $serverconfig,
             confighelper => $confighelper,
         };
+    }
+
+    if (!defined($servers{$servername})) {
+        die("Missing serverconfig file %s_defaults.yaml\n", $servername);
     }
 
     # copy info about localhost to separate hash for easier retrieval
@@ -457,6 +498,75 @@ sub list_groupmembers {
     }
 
     return \@groupmembers;
+}
+
+sub jobstatus_to_string {
+    my ($jobstatus) = @_;
+
+    my $jobstatus_str = 'UNKNOWN';
+
+    if (defined($jobstatus)) {
+        if ($jobstatus =~ m/^\d+$/) {
+            if ($jobstatus == JOBSTATUS_QUEUED) {
+                $jobstatus_str = 'QUEUED';
+
+            } elsif ($jobstatus == JOBSTATUS_STARTED) {
+                $jobstatus_str = 'STARTED';
+
+            } elsif ($jobstatus == JOBSTATUS_PROCESSED) {
+                $jobstatus_str = 'PROCESSED';
+
+            } elsif ($jobstatus == JOBSTATUS_FINISHED) {
+                $jobstatus_str = 'FINISHED';
+
+            } elsif ($jobstatus == JOBSTATUS_FAILED_OFFLINE) {
+                $jobstatus_str = 'ERR_OFFLINE';
+
+            } elsif ($jobstatus == JOBSTATUS_FAILED_RSHELL) {
+                $jobstatus_str = 'ERR_RSHELL';
+
+            } elsif ($jobstatus == JOBSTATUS_FAILED_RSYNCAPP) {
+                $jobstatus_str = 'ERR_RSYNC';
+            }
+        }
+    }
+
+    return $jobstatus_str;
+}
+
+sub string_to_jobstatus {
+    my ($string) = @_;
+
+    my $jobstatus = undef;
+
+    if (defined($string)) {
+        if ($string eq 'QUEUED') {
+            $jobstatus = JOBSTATUS_QUEUED;
+
+        } elsif ($string eq 'STARTED') {
+            $jobstatus = JOBSTATUS_STARTED;
+
+        } elsif ($string eq 'PROCESSED') {
+            $jobstatus = JOBSTATUS_PROCESSED;
+
+        } elsif ($string eq 'FINISHED') {
+            $jobstatus = JOBSTATUS_FINISHED;
+
+        } elsif ($string eq 'ERR_OFFLINE') {
+            $jobstatus = JOBSTATUS_FAILED_OFFLINE;
+
+        } elsif ($string eq 'ERR_RSHELL') {
+            $jobstatus = JOBSTATUS_FAILED_RSHELL;
+
+        } elsif ($string eq 'ERR_RSYNC') {
+            $jobstatus = JOBSTATUS_FAILED_RSYNCAPP;
+
+        } else {
+            printf(STDERR "invalid jobstatus argument specified.\n");
+        }
+    }
+
+    return $jobstatus;
 }
 
 sub _read_host_configfile {

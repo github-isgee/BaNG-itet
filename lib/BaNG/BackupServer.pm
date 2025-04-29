@@ -146,7 +146,7 @@ sub check_client_connection {
 
     my $state = 0;
     my $msg   = 'Host offline';
-    my $p     = Net::Ping->new( 'tcp', 2 );
+    my $p     = Net::Ping->new( 'icmp', 2 );
 
     eval {
         if ( $p->ping($host) ) {
@@ -269,8 +269,8 @@ sub pre_queue_checks {
         $endstamp   = $startstamp;
         $jobid = create_timeid( $taskid, $host, $group );
         logit( $taskid, $host, $group, "Error: host $host is offline" );
-        bangstat_start_backupjob( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
-                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), '0', '-1', '' ) unless $noreport;
+        bangstat_report_pre_queue_error( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
+                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), ERRSTATUS_NOERR, JOBSTATUS_FAILED_OFFLINE, '' ) unless $noreport;
         return 0;
     }
 
@@ -283,8 +283,8 @@ sub pre_queue_checks {
         $endstamp   = $startstamp;
         $jobid = create_timeid( $taskid, $host, $group );
         logit( $taskid, $host, $group, "Error: ". $hosts{"$host-$group"}->{hostconfig}->{BKP_RSYNC_RSHELL} ." on host $host not working" );
-        bangstat_start_backupjob( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
-                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), '0', '-2', '' ) unless $noreport;
+        bangstat_report_pre_queue_error( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
+                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), ERRSTATUS_NOERR, JOBSTATUS_FAILED_RSHELL, '' ) unless $noreport;
         mail_report( $taskid, $host, $group, () ) if $serverconfig{report_to};
         return 0;
     }
@@ -294,8 +294,8 @@ sub pre_queue_checks {
         $endstamp   = $startstamp;
         $jobid = create_timeid( $taskid, $host, $group );
         logit( $taskid, $host, $group, "RSYNC command " . ($serverconfig{path_rsync} || "") . " not found!" );
-        bangstat_start_backupjob( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
-                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), '0', '-5', '' ) unless $noreport;
+        bangstat_report_pre_queue_error( $taskid, $jobid, $host, $group, $startstamp, $endstamp, $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER},
+                                  $hosts{"$host-$group"}->{hostconfig}->{BKP_SOURCE_FOLDER}, targetpath( $host, $group ), ERRSTATUS_NOERR, JOBSTATUS_FAILED_RSYNCAPP, '' ) unless $noreport;
         return 0;
     }
 
