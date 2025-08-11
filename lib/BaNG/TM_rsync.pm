@@ -453,25 +453,28 @@ sub _queue_remote_subfolders {
         print "- $remotesubfolder/\n" if $serverconfig{verbose};
     }
     close $fhExcludeFile unless $serverconfig{dryrun};
+    
+    if (!$hosts{"$host-$group"}->{hostconfig}->{BKP_SKIP_FILESONLY_JOB}) {
 
-    # add bkp job for files only
-    my $bkpjob = {
-        taskid         => $taskid,
-        jobid          => $jobid,
-        host           => $host,
-        group          => $group,
-        path           => ":'${srcfolder}'",
-        bkptimestamp   => $bkptimestamp,
-        srcfolder      => ":$srcfolder",
-        dosnapshot     => 1,
-        dryrun         => $dryrun,
-        cron           => $cron,
-        noreport       => $noreport,
-        exclsubfolders => 1,
-    };
+        # add bkp job for files only
+        my $bkpjob = {
+            taskid         => $taskid,
+            jobid          => $jobid,
+            host           => $host,
+            group          => $group,
+            path           => ":'${srcfolder}'",
+            bkptimestamp   => $bkptimestamp,
+            srcfolder      => ":$srcfolder",
+            dosnapshot     => 1,
+            dryrun         => $dryrun,
+            cron           => $cron,
+            noreport       => $noreport,
+            exclsubfolders => 1,
+        };
 
-    logit( $taskid, $host, $group, "DOSNAPSHOT == $dosnapshot pushing job for $srcfolder FILESONLY for host $host group $group" );
-    push( @queue, $bkpjob );
+        logit( $taskid, $host, $group, "DOSNAPSHOT == $dosnapshot pushing job for $srcfolder FILESONLY for host $host group $group" );
+        push( @queue, $bkpjob );
+    }
 
     return 1;
 }
